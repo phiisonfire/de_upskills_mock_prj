@@ -1,0 +1,20 @@
+table,column,min_value,max_value,sample_values
+genome_scores,movieId,1,131170,1
+genome_scores,relevance,0.000249999999999972,1.0,0.025
+genome_scores,tagId,1,1128,1
+genome_tags,tag,007,zombies,007
+genome_tags,tagId,1,1128,1
+link,imdbId,5,4530184,114709
+link,movieId,1,131262,1
+link,tmdbId,2,421510,862
+movie,genres,(no genres listed),Western,Adventure|Animation|Children|Comedy|Fantasy
+movie,movieId,1,131262,1
+movie,title,#chicagoGirl: The Social Network Takes on a Dictator (2013),貞子3D (2012),Toy Story (1995)
+rating,movieId,1,131262,2
+rating,rating,0.5,5.0,3.5
+rating,timestamp,1995-01-09 11:46:44,2015-03-31 06:40:02,2005-04-02 23:53:47
+rating,userId,1,138493,1
+tag,movieId,1,131258,4141
+tag,tag,!950's Superman TV show,é˜®ä¸€é¸£,Mark Waters
+tag,timestamp,2005-12-24 13:00:10,2015-03-31 03:09:12,2009-04-24 18:19:40
+tag,userId,18,138472,18

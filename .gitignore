@@ -219,3 +219,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated deterministic simulation batches; keep source data out of version control.
+data/simulated/

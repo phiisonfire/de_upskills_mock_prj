@@ -1,0 +1,2 @@
+rows,distinct_raw_tag_values,distinct_normalized_tag_values,blank_or_whitespace_rows,rows_changed_by_normalization
+465564,38644,35162,7,162625

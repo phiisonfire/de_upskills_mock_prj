@@ -1,0 +1,7 @@
+table,source_file,bytes,megabytes_decimal
+rating,rating.csv,690353377,690.353377
+genome_scores,genome_scores.csv,214322450,214.32245
+tag,tag.csv,21725514,21.725514
+movie,movie.csv,1493648,1.493648
+link,link.csv,539334,0.539334
+genome_tags,genome_tags.csv,20363,0.020363

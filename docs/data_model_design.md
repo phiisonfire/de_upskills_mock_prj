@@ -6,17 +6,20 @@ This design translates the MovieLens 20M source files into an auditable lakehous
 
 The design is based on the generated profiles in `data/investigation/`:
 
-- `rating`: 20,000,263 rows; inferred `userId`/`movieId` Int64, `rating` Float64, `timestamp` String; no profiled nulls. `(userId, movieId)` has 20,000,263 distinct keys and no duplicates.
-- `tag`: 465,564 rows; inferred IDs Int64, `tag` and `timestamp` String; no profiled nulls. `(userId, movieId, tag, timestamp)` is unique in this snapshot.
+- `rating`: 20,000,263 rows; inferred `userId`/`movieId` Int64, `rating` Float64, `timestamp` String; no profiled nulls. `(userId, movieId)` has 20,000,263 distinct keys and no duplicates. Full-row duplicate excess is zero. All values are in [0.5, 5.0] and on half-star increments. Most common values are 4.0 (5,561,926), 3.0 (4,291,193), and 5.0 (2,898,660).
+- Rating counts are highly skewed: ratings/movie median 18, p95 3,614, p99 14,396, max 67,310; ratings/user median 68, p95 520, p99 1,113, max 9,254. Avoid user/movie partitioning and account for skewed keys during joins/aggregations.
+- `tag`: 465,564 rows; inferred IDs Int64, `tag` and `timestamp` String; no profiled nulls. `(userId, movieId, tag, timestamp)` is unique in this snapshot. Full-row duplicate excess is zero. Conservative NFC + trim + lowercase + whitespace-collapse normalization changes 162,625 rows (about 34.9%); distinct raw values fall from 38,644 to 35,162 (3,482 fewer, about 9.0%). Seven rows are blank or whitespace. These collisions represent formatting variants under this rule, not proof that semantic synonyms are equivalent.
 - `movie`: 27,278 rows; `movieId` Int64, `title`/`genres` String; no profiled nulls. `movieId` unique.
 - `link`: 27,278 rows; `movieId`, `imdbId`, `tmdbId` inferred Int64. `movieId` unique and complete relative to movie in both directions; `tmdbId` has 252 nulls; `imdbId` has no profiled nulls.
-- `genome_scores`: 11,709,768 rows; IDs Int64, relevance Float64; no profiled nulls. `(movieId, tagId)` unique; observed relevance range 0.00025–1.0.
+- `genome_scores`: 11,709,768 rows; IDs Int64, relevance Float64; no profiled nulls. `(movieId, tagId)` unique; full-row duplicate excess is zero; every relevance is within [0,1] and observed range is 0.00025–1.0. Scores cover 10,381 of 27,278 catalog movies (38.06%); each covered movie has exactly 1,128 scores. Missing genome rows mean “not covered” and must not be treated as zero relevance.
 - `genome_tags`: 1,128 rows; unique `tagId`, non-null string `tag`.
-- All profiled foreign-key anti-joins returned zero orphan rows.
-- Rating values range from 0.5 to 5.0; timestamps are strings in the source and lexically range from `1995-01-09 11:46:44` to `2015-03-31 06:40:02`.
-- Movie title profiling found year parsing exceptions; the inspected unmatched-title output includes missing-year titles, year ranges, and malformed parentheses. Preserve and flag these rather than dropping the records.
+- All profiled foreign-key anti-joins returned zero orphan rows. Full-row duplicate excess is zero for all six source files.
+- Rating timestamps all parse using `%Y-%m-%d %H:%M:%S` and range from `1995-01-09 11:46:44` to `2015-03-31 06:40:02`; tag timestamps all parse and range from `2005-12-24 13:00:10` to `2015-03-31 03:09:12`. Neither file has timezone markers. The naive values do not establish timezone semantics, so the CDM must not call them UTC until the source timezone is confirmed.
+- The movie profile finds 246 `(no genres listed)` sentinels (0.90% of movies), no null genres, and no genre labels outside the documented set. Drama (13,344 associations) and Comedy (8,374) are the most common labels; a multi-genre movie contributes one association to each label.
+- Title profiling classified 27,256 titles with a terminal four-digit year, 3 as year ranges, and 19 with no recognizable terminal year. Preserve raw titles and parse status. The extra-closing-parenthesis case is accepted by the permissive year extractor; retain a malformed-title flag if you need to distinguish it from clean parses.
+- Combined source CSV size is about 928.5 MB; `rating.csv` is 690.4 MB and `genome_scores.csv` is 214.3 MB. Measure converted columnar sizes after a representative write rather than extrapolating from CSV bytes.
 
-Profiles do not yet establish timestamp timezone, detailed rating distribution/skew, exact invalid rating increments, all genre frequencies, exact duplicate rows for every table beyond the stated candidate keys, or the real-world validity of identifiers. Do not claim these checks passed until measured. In particular, profile results describe this static snapshot; the synthetic future CDC batches need their own checks.
+The static snapshot results do not prove how future/simulated batches behave. Re-run the same DQ and idempotency checks on each batch; do not infer timezone from the timestamp strings or semantic tag equivalence from formatting collisions.
 
 ## 2. Source-to-CDM mapping
 
@@ -31,7 +34,7 @@ Use source-scoped identifiers so values from separate providers cannot collide. 
 | `InteractionEvent` | One user-submitted event; `event_id` | Common representation for rating and user-tag events. Keep event types distinct. |
 | `ContentGenre` | One content-to-genre association | Normalize the pipe-delimited genre list into a bridge. Preserve an explicit `NO_GENRE_LISTED` state for the sentinel. |
 | `ExternalContentId` | One provider identifier per content/provider | IMDb and TMDb IDs/URLs, nullable when absent. |
-| `ContentTagSignal` | One `(content, signal taxonomy tag)` measurement | Algorithm-derived genome relevance. Separate from user-submitted tags. |
+| `ContentTagSignal` | One `(content, signal taxonomy tag)` measurement | Algorithm-derived genome relevance. Separate from user-submitted tags. Genome data covers only 38.06% of catalog movies, so coverage must be explicit. |
 
 ### 2.2 Field mapping
 
@@ -40,10 +43,10 @@ Use source-scoped identifiers so values from separate providers cannot collide. 
 | `rating.userId` | `party_source_id` | Cast to Int64; pair with `source_system='movielens'`. Do not treat numeric IDs as globally unique. |
 | `rating.movieId` | `content_source_id` | Cast to Int64; pair with source system; validate against content key. |
 | `rating.rating` | `event_value_numeric`, `event_value_unit='rating_0_5'` and optionally `rating_percent` | Preserve source value on 0.5–5.0 scale. For cross-source comparison, normalize to 0–100 by `rating * 20`; retain original value and scale. Do not replace source value with normalized value. |
-| `rating.timestamp` | `event_time_utc` plus `event_time_source` | Parse exact `%Y-%m-%d %H:%M:%S`; confirm the source timezone before labeling UTC. Preserve the raw source timestamp. |
+| `rating.timestamp` | `event_time_source` and, after timezone confirmation, `event_time_utc` | Parse exact `%Y-%m-%d %H:%M:%S`; profile found zero parse failures and no timezone markers. Preserve the raw source timestamp. Do not apply a timezone conversion until verified from source documentation. |
 | `tag.userId`, `tag.movieId` | `party_source_id`, `content_source_id` | Same source-scoped key rules as ratings. |
-| `tag.tag` | `event_value_text_raw`, `tag_text_normalized` | Preserve raw text. Create a normalized value by trimming, Unicode normalization, case folding, and whitespace collapse. Keep punctuation policy explicit; do not merge semantically different tags automatically. |
-| `tag.timestamp` | `event_time_utc` plus `event_time_source` | Parse while retaining source text; timezone needs confirmation. |
+| `tag.tag` | `event_value_text_raw`, `tag_text_normalized` | Preserve raw text. Conservative NFC + trim + lowercase + whitespace collapse changes 34.9% of rows and reduces distinct values by 3,482; seven rows normalize to blank. Keep raw values and a normalization version. Do not merge punctuation variants or semantic synonyms without a curated mapping. |
+| `tag.timestamp` | `event_time_source` and, after timezone confirmation, `event_time_utc` | Parse while retaining source text; all rows parse, but no timezone marker is present and timezone needs source confirmation. |
 | `movie.movieId` | `content_source_id` | Source-scoped natural key. |
 | `movie.title` | `title_raw`, `display_title`, `release_year`, `title_parse_status` | Extract terminal year where valid; preserve raw title. Classify unmatched values as missing year, year range, malformed suffix, or other. Do not invent years. |
 | `movie.genres` | `ContentGenre` associations | Split on `|`, trim values, validate against the documented genre set. Convert `(no genres listed)` into an explicit sentinel/status and no ordinary genre association. |
@@ -58,7 +61,7 @@ Use source-scoped identifiers so values from separate providers cannot collide. 
 
 For the current immutable snapshot, a deterministic `event_id` can be a SHA-256 hash of canonicalized source identity plus source business-key fields and original values. For ratings, the measured `(userId, movieId)` pair is unique in this snapshot, so it can be the source event key; however, the project should still include rating, timestamp, source system, and source file in the record hash/audit lineage. For tags, use `(userId, movieId, tag, timestamp)` as the snapshot event key because that composite was measured unique. Do not assume the same uniqueness in future batches or other sources.
 
-Deduplication precedence in Silver: exact same source key and same canonical record hash is replay and is ignored; same source key with differing payload is a conflict and is quarantined or resolved using an explicitly documented source update/version rule. Never use arbitrary last-row order. Late events are accepted based on event time and merge key; ingestion batch/time is tracked separately.
+For this snapshot, the measured rating pair and tag composite key are unique, and all source files have zero exact duplicate rows. Use those keys as source event identities for the initial model, but still compute record hashes and test repeated deliveries in the simulated batches. Deduplication precedence in Silver: exact same source key and same canonical record hash is replay and is ignored; same source key with differing payload is a conflict and is quarantined or resolved using an explicitly documented source update/version rule. Never use arbitrary last-row order. Late events are accepted based on event time and merge key; ingestion batch/time is tracked separately.
 
 ## 3. Medallion architecture
 
@@ -98,19 +101,21 @@ Silver is the validated conformed layer and the only layer that applies business
 
 Use Iceberg `MERGE` on stable source-scoped business keys and record hash. Exact replays no-op; late event records are merged idempotently; conflicting payloads follow the conflict policy above. Store schema and CDM mapping version on records or batch control metadata.
 
-DQ candidates (severity finalized after measured rule results):
+DQ rules for the supplied snapshot (recheck these on every simulated/new batch):
 
-| Rule | Candidate severity | Basis |
+| Rule | Severity | Basis |
 |---|---|---|
-| Required IDs and event timestamp parse | Blocking for Silver event facts | Without these, records cannot be keyed/ordered reliably; profile shows no nulls, but parsing check still needs execution. |
-| Rating in [0.5,5.0], half-star increments | Blocking | Assignment defines valid domain; measured min/max match bounds but increment distribution was not in these result files. |
-| Genome relevance in [0,1] | Blocking | Assignment defines range; observed min/max fit, but range rule must still be checked row-wise. |
+| Required IDs and event timestamp parse | Blocking for Silver event facts | No null IDs/timestamps or timestamp parse failures were found in the static snapshot. Timezone meaning remains unconfirmed. |
+| Rating in [0.5,5.0], half-star increments | Blocking | All 20,000,263 ratings passed both checks. Keep the row-level rule for future batches. |
+| Genome relevance in [0,1] | Blocking | All 11,709,768 rows passed; min/max were 0.00025 and 1.0. |
 | Orphan movie/tag references | Blocking | All measured orphan counts are zero; monitor every batch. |
 | Duplicate event key with differing hash | Blocking/quarantine | Avoid silent event loss; exact measured keys unique in this snapshot. |
 | Missing TMDb ID | Warning | 252 of 27,278 link rows; TMDb is nullable external enrichment, not required for core content identity. |
-| Unparseable/missing release year | Warning + review queue | Title remains usable; do not drop movie. Preserve raw title and parse status. |
-| `(no genres listed)` | Valid explicit state, not null | Assignment identifies it as sentinel. |
-| Blank/whitespace user tag | Warning or quarantine | Free text is user-entered; measure count before choosing severity. |
+| Unparseable/missing release year | Warning + review queue | 22 titles need review: 3 year ranges and 19 without a recognizable terminal year. Title remains usable; do not drop movie. Preserve raw title and parse status. |
+| `(no genres listed)` | Valid explicit state, not null | 246 rows; keep as explicit status/sentinel and do not represent it as a normal genre. |
+| Blank/whitespace user tag | Row-level quarantine, pipeline continues | Seven rows; they are unusable as tag labels but should not fail the whole batch. Preserve them in Bronze and record quarantine reason in Silver. |
+| Rating and per-entity skew | Operational warning/optimization signal | Strongly skewed counts (movie p99 14,396/max 67,310); monitor runtime and shuffle skew, but do not reject records. |
+| Genome coverage | Completeness metric, not a row-level failure | Only 38.06% of catalog movies have scores; do not impute absent scores as 0. |
 
 ### Gold
 
@@ -124,6 +129,7 @@ Use surrogate keys for dimensions and explicit fact grains. Suggested core star 
 | `dim_genre` | One canonical genre | `genre_sk`; stable label/code. |
 | `bridge_content_genre` | One content dimension version × genre association | Supports multi-valued genres and historical genre classification. |
 | `dim_signal_tag` | One genome taxonomy tag | Distinct from user-entered tag values. |
+| `dim_user_tag` (optional) | One normalized user tag value | Use only for tag frequency/correlation marts; retain raw submitted text on `fact_user_tag`, and do not merge semantic synonyms without governance. |
 | `fact_rating` | One rating event | `rating_event_sk`, `content_sk`, `party_sk`, date key, original rating, normalized 0–100 rating, event timestamp, source event ID and lineage. |
 | `fact_user_tag` | One user tag submission | `tag_event_sk`, content/party/date keys, raw and normalized text or normalized tag dimension key. |
 | `fact_genome_score` | One content × genome tag score | Grain `(content_sk, signal_tag_sk)` for a given source snapshot/version; store relevance. |
@@ -162,12 +168,19 @@ Partitioning recommendation (validate with query patterns and file sizes):
 |---|---|
 | Landing CSV | Prefix by source and batch; immutable file objects. |
 | Bronze event tables | Partition by ingestion date or batch for replay/operations; avoid user/movie high-cardinality partitions. |
-| Silver rating/tag events | Event month (or event date if data volume per date justifies it); assess Iceberg hidden partition transforms and avoid tiny partitions. |
+| Silver rating/tag events | Event month as initial layout, especially for ratings; inspect file sizes and query scans after conversion. Daily partitions could create small files; assess Iceberg hidden partition transforms. |
 | Silver movie/link/taxonomy dimensions | Usually unpartitioned at these sizes. |
-| Genome scores | 11.7M rows: partition by a low-cardinality strategy such as movie ID bucket/hash if measurements justify it, or leave unpartitioned and sort/cluster by movie/tag keys; do not partition by individual `tagId` without workload evidence. |
+| Genome scores | Leave unpartitioned initially or use a movie-ID bucket/sort layout only if measured query performance requires it. The 11.7M rows are dense: exactly 1,128 tags for each of 10,381 covered movies. Do not partition by individual `tagId`; missing catalog coverage is 61.94%, not zero relevance. |
 | Gold rating fact | Event month is a reasonable starting point for temporal analytics; tune based on query scans and file sizes. |
 | Gold small dimensions | Unpartitioned. |
 
-## 6. Decisions still to document from profiling
+## 6. Remaining design follow-ups
 
-Before finalizing the design, add measured results for: parsed timestamp failure counts and timezone interpretation; rating half-step violations and rating distribution/skew; exact duplicate rows (especially if batches can repeat); tag blank/whitespace counts and normalization impact; genre counts and sentinel count; title parse status totals; genome score bounds; and approximate file/table sizes after conversion. These are not included in the four result CSVs read for this design.
+The static-source investigations are complete for the listed measures and are saved in `data/investigation/`. The remaining evidence/decisions are:
+
+1. **Timezone semantics:** confirm the source timezone from MovieLens documentation or instructor guidance; the strings contain no offsets, so code cannot infer UTC. Until confirmed, use `event_time_source` and avoid UTC conversions.
+2. **Title parsing QA:** inspect the 22 review cases and separate the extra-closing-parenthesis title from genuine missing years/year ranges. Preserve source title in every case.
+3. **Tag vocabulary governance:** inspect `tag_normalization_collision_examples.csv`; the normalization is intentionally conservative and does not equate punctuation changes or semantic synonyms. Decide whether any curated synonym mapping is justified. Keep raw and normalized values.
+4. **Converted storage sizing and partition tuning:** measure Parquet/Iceberg output bytes, file counts, and query scans after a representative write. The CSV source totals about 928.5 MB, dominated by ratings (690.4 MB) and genome scores (214.3 MB).
+5. **Incremental behavior:** the clean initial snapshot does not test replay, late arrivals, conflicting payloads, or watermark behavior. Test those using the synthetic batch generator; exact duplicate rows across delivered batches are still possible even though none exist within these source files.
+6. **SCD CDC semantics:** confirm synthetic `changed_at` timestamps and define effective-time ordering for genre changes so point-in-time joins have deterministic results.

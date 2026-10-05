@@ -204,6 +204,44 @@ class MovieLensFoundationStack(Stack):
         )
         silver_job.node.add_dependency(database)
 
+        gold_job = glue.CfnJob(
+            self,
+            "GoldDimensionalModelJob",
+            name=f"cineinsight-{run_id}-gold",
+            description=f"Build dimensional Gold tables and incremental facts for {run_id}",
+            role=glue_role.role_arn,
+            glue_version="5.0",
+            command=glue.CfnJob.JobCommandProperty(
+                name="glueetl",
+                python_version="3",
+                script_location=f"s3://{self.data_bucket.bucket_name}/{prefix}/jobs/gold_build.py",
+            ),
+            execution_property=glue.CfnJob.ExecutionPropertyProperty(max_concurrent_runs=1),
+            worker_type="G.1X",
+            number_of_workers=2,
+            timeout=240,
+            max_retries=1,
+            default_arguments={
+                "--run_id": run_id,
+                "--database_name": database_name,
+                "--warehouse_uri": f"s3://{self.data_bucket.bucket_name}/{prefix}/gold/",
+                "--datalake-formats": "iceberg",
+                "--enable-glue-datacatalog": "true",
+                "--enable-metrics": "true",
+                "--enable-continuous-cloudwatch-log": "true",
+                "--job-bookmark-option": "job-bookmark-disable",
+                "--TempDir": f"s3://{self.data_bucket.bucket_name}/{prefix}/control/glue-temp/",
+                "--conf": (
+                    "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions "
+                    "--conf spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog "
+                    f"--conf spark.sql.catalog.glue_catalog.warehouse=s3://{self.data_bucket.bucket_name}/{prefix}/gold/ "
+                    "--conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog "
+                    "--conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO"
+                ),
+            },
+        )
+        gold_job.node.add_dependency(database)
+
         results_location = f"s3://{self.data_bucket.bucket_name}/{prefix}/athena-results/"
         workgroup = athena.CfnWorkGroup(
             self,
@@ -360,5 +398,7 @@ class MovieLensFoundationStack(Stack):
             "SilverScriptUri",
             value=f"s3://{self.data_bucket.bucket_name}/{prefix}/jobs/silver_merge.py",
         )
+        CfnOutput(self, "GoldJobName", value=gold_job.name or gold_job.ref)
+        CfnOutput(self, "GoldScriptUri", value=f"s3://{self.data_bucket.bucket_name}/{prefix}/jobs/gold_build.py")
         CfnOutput(self, "AthenaQueryRoleArn", value=athena_role.role_arn)
         CfnOutput(self, "OrchestrationRoleArn", value=mwaa_role.role_arn)

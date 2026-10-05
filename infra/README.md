@@ -140,6 +140,37 @@ For each Bronze file, first run the Bronze command above. Then run Silver with t
 
 Use the `arrival_files` and bootstrap entries in `data/simulated/movielens_t2013_daily_v2/manifest.json` to enumerate inputs. Treat `source_snapshot/rating.csv` and `source_snapshot/tag.csv` as provenance only: process their split history slices and arrival files instead. Preserve `batch_0002` late arrivals as separate inputs; Silver merges use stable source event keys and hashes, so an exact repeated delivery is ignored while a conflicting payload is quarantined. The Silver tables `silver_batch_control`, `silver_dq_result`, and `silver_quarantine` record outcomes and row-level reasons. A failed Glue run with blocking DQ must be resolved before treating its batch as complete.
 
+## Create Gold and verify assignment queries
+
+The Glue Gold job creates conformed dimensions, an effective-dated content/genre model, genre bridge, and separate rating, user-tag, and genome-score facts. Its first argument set is `source_table`, `batch_id`, and `landing_uri`; it merges with deterministic surrogate keys, so rerunning an input does not append duplicate facts. Content genre changes and soft deletes create Type 2 content versions. Type 1 technical corrections and Type 3 current/previous display-title attributes come from Silver's `silver_content` and do not create extra Type 2 versions unless the genre/deletion state changes. Rating/tag facts use the content version effective at the event timestamp; when a later movie CDC arrives, Gold rekeys the affected facts against the new effective timeline. Unknown content or party references get an inferred dimension member as a recovery path.
+
+Upload the script after deployment:
+
+```bash
+~/.local/bin/aws s3 cp infra/jobs/gold_build.py \
+  s3://<BUCKET_NAME>/runs/movielens_t2013_daily_v2/jobs/gold_build.py
+```
+
+Once Silver has processed the bootstrap tables and selected rating/tag/genome files, run the one-time Gold bootstrap to create the full initial facts and dimensions:
+
+```bash
+~/.local/bin/aws glue start-job-run \
+  --job-name cineinsight-movielens_t2013_daily_v2-gold \
+  --arguments '{"--source_table":"bootstrap","--batch_id":"gold_bootstrap","--landing_uri":"bootstrap"}'
+```
+
+For each later Silver input, run Gold with the same `source_table`, `batch_id`, and exact Landing URI. For example, after a Silver `rating/batch_0002` late-arrival file:
+
+```bash
+~/.local/bin/aws glue start-job-run \
+  --job-name cineinsight-movielens_t2013_daily_v2-gold \
+  --arguments '{"--source_table":"rating","--batch_id":"batch_0002","--landing_uri":"s3://<BUCKET_NAME>/runs/movielens_t2013_daily_v2/landing/movielens/arrivals/rating/batch_id=batch_0002/00000000.csv"}'
+```
+
+Run Gold after each `movie_cdc` Silver batch in order so the effective-dated dimension and any affected rating/tag/genome fact keys are reconciled. Run it after `link` and `genome_tags` to merge their dimensions, and after each `genome_scores` batch to merge those fact rows. Inspect `gold_batch_control` for each run.
+
+The Athena SQL files [assignment_analytics.sql](queries/assignment_analytics.sql) contain the requested ranking, genre quality/popularity/variance, release/event-time trends, normalized-tag, genome coverage/profile, and hidden-gem queries. The 500-vote ranking floor filters thin samples while retaining films well below the profiled 3,614-vote 95th percentile; the 18-vote median shows why an unfiltered list is vulnerable to one- or few-vote titles. The hidden-gem criteria (4.0 average, 100 ratings, under 25% genome coverage) are explicit starting assumptions to explain and adjust in the report. [verification.sql](queries/verification.sql) checks fact grains, Type 2 intervals, Type 1/3 examples, historical point-in-time versus current-state genre joins, and URL formats. Select the Glue database in Athena before running either file. These queries are ready to run after AWS deployment and Gold loads; AWS execution is still pending credentials and deployment.
+
 ## Clean up
 
 To remove IAM roles, the Glue database, Athena workgroup, and budget while retaining the data bucket:

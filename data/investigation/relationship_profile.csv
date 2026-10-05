@@ -1,0 +1,7 @@
+relationship,orphan_rows
+rating.movieId -> movie.movieId,0
+tag.movieId -> movie.movieId,0
+link.movieId -> movie.movieId,0
+movie.movieId -> link.movieId,0
+genome_scores.movieId -> movie.movieId,0
+genome_scores.tagId -> genome_tags.tagId,0

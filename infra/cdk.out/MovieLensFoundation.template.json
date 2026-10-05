@@ -1,0 +1,911 @@
+{
+ "Resources": {
+  "DataLakeBucket0256EA8E": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketEncryption": {
+     "ServerSideEncryptionConfiguration": [
+      {
+       "ServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+       }
+      }
+     ]
+    },
+    "LifecycleConfiguration": {
+     "Rules": [
+      {
+       "Id": "ExpireNoncurrentVersions",
+       "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 90
+       },
+       "Status": "Enabled"
+      }
+     ]
+    },
+    "OwnershipControls": {
+     "Rules": [
+      {
+       "ObjectOwnership": "BucketOwnerEnforced"
+      }
+     ]
+    },
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": true,
+     "BlockPublicPolicy": true,
+     "IgnorePublicAcls": true,
+     "RestrictPublicBuckets": true
+    },
+    "VersioningConfiguration": {
+     "Status": "Enabled"
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/DataLakeBucket/Resource"
+   }
+  },
+  "DataLakeBucketPolicy52869FB4": {
+   "Type": "AWS::S3::BucketPolicy",
+   "Properties": {
+    "Bucket": {
+     "Ref": "DataLakeBucket0256EA8E"
+    },
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "DataLakeBucket0256EA8E",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/DataLakeBucket/Policy/Resource"
+   }
+  },
+  "GlueDatabase": {
+   "Type": "AWS::Glue::Database",
+   "Properties": {
+    "CatalogId": {
+     "Ref": "AWS::AccountId"
+    },
+    "DatabaseInput": {
+     "Name": "movielens_movielens_t2013_daily_v2"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/GlueDatabase"
+   }
+  },
+  "GlueJobRoleF1B69418": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "glue.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Description": "Glue processing role for movielens_t2013_daily_v2",
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSGlueServiceRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "DependsOn": [
+    "GlueDatabase"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/GlueJobRole/Resource"
+   }
+  },
+  "GlueJobRoleDefaultPolicy94EFA0CF": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:ListBucket",
+       "Condition": {
+        "StringLike": {
+         "s3:prefix": [
+          "runs/movielens_t2013_daily_v2/*"
+         ]
+        }
+       },
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "DataLakeBucket0256EA8E",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": "s3:GetBucketLocation",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "DataLakeBucket0256EA8E",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "DataLakeBucket0256EA8E",
+            "Arn"
+           ]
+          },
+          "/runs/movielens_t2013_daily_v2/landing/*"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/bronze/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/silver/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/gold/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/quarantine/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/control/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "glue:GetDatabase",
+        "glue:GetDatabases",
+        "glue:CreateTable",
+        "glue:GetTable",
+        "glue:GetTables",
+        "glue:UpdateTable",
+        "glue:DeleteTable",
+        "glue:BatchCreatePartition",
+        "glue:BatchGetPartition",
+        "glue:CreatePartition",
+        "glue:UpdatePartition",
+        "glue:DeletePartition"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":glue:us-east-1:",
+           {
+            "Ref": "AWS::AccountId"
+           },
+           ":catalog"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":glue:us-east-1:",
+           {
+            "Ref": "AWS::AccountId"
+           },
+           ":database/movielens_movielens_t2013_daily_v2"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":glue:us-east-1:",
+           {
+            "Ref": "AWS::AccountId"
+           },
+           ":table/movielens_movielens_t2013_daily_v2/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "GlueJobRoleDefaultPolicy94EFA0CF",
+    "Roles": [
+     {
+      "Ref": "GlueJobRoleF1B69418"
+     }
+    ]
+   },
+   "DependsOn": [
+    "GlueDatabase"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/GlueJobRole/DefaultPolicy/Resource"
+   }
+  },
+  "AthenaWorkGroup": {
+   "Type": "AWS::Athena::WorkGroup",
+   "Properties": {
+    "Description": "Athena workgroup for movielens_t2013_daily_v2",
+    "Name": "cineinsight-movielens-t2013-daily-v2",
+    "State": "ENABLED",
+    "WorkGroupConfiguration": {
+     "BytesScannedCutoffPerQuery": 1073741824,
+     "EnforceWorkGroupConfiguration": true,
+     "PublishCloudWatchMetricsEnabled": true,
+     "ResultConfiguration": {
+      "EncryptionConfiguration": {
+       "EncryptionOption": "SSE_S3"
+      },
+      "OutputLocation": {
+       "Fn::Join": [
+        "",
+        [
+         "s3://",
+         {
+          "Ref": "DataLakeBucket0256EA8E"
+         },
+         "/runs/movielens_t2013_daily_v2/athena-results/"
+        ]
+       ]
+      }
+     }
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/AthenaWorkGroup"
+   }
+  },
+  "AthenaQueryRole029AC370": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":iam::",
+           {
+            "Ref": "AWS::AccountId"
+           },
+           ":root"
+          ]
+         ]
+        }
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Description": "Read MovieLens curated data and query it in movielens_t2013_daily_v2"
+   },
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/AthenaQueryRole/Resource"
+   }
+  },
+  "AthenaQueryRoleDefaultPolicy769F2B51": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "athena:StartQueryExecution",
+        "athena:StopQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:GetWorkGroup",
+        "athena:ListQueryExecutions"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":athena:us-east-1:",
+          {
+           "Ref": "AWS::AccountId"
+          },
+          ":workgroup/",
+          {
+           "Ref": "AthenaWorkGroup"
+          }
+         ]
+        ]
+       }
+      },
+      {
+       "Action": "s3:ListBucket",
+       "Condition": {
+        "StringLike": {
+         "s3:prefix": [
+          "runs/movielens_t2013_daily_v2/bronze/*",
+          "runs/movielens_t2013_daily_v2/silver/*",
+          "runs/movielens_t2013_daily_v2/gold/*",
+          "runs/movielens_t2013_daily_v2/athena-results/*"
+         ]
+        }
+       },
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "DataLakeBucket0256EA8E",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": "s3:GetBucketLocation",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "DataLakeBucket0256EA8E",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:AbortMultipartUpload"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/bronze/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/silver/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/gold/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/athena-results/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "glue:GetDatabase",
+        "glue:GetDatabases",
+        "glue:GetTable",
+        "glue:GetTables",
+        "glue:GetPartition",
+        "glue:GetPartitions"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":glue:us-east-1:",
+           {
+            "Ref": "AWS::AccountId"
+           },
+           ":catalog"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":glue:us-east-1:",
+           {
+            "Ref": "AWS::AccountId"
+           },
+           ":database/movielens_movielens_t2013_daily_v2"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":glue:us-east-1:",
+           {
+            "Ref": "AWS::AccountId"
+           },
+           ":table/movielens_movielens_t2013_daily_v2/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "AthenaQueryRoleDefaultPolicy769F2B51",
+    "Roles": [
+     {
+      "Ref": "AthenaQueryRole029AC370"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/AthenaQueryRole/DefaultPolicy/Resource"
+   }
+  },
+  "OrchestrationRole459E04B5": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "airflow.amazonaws.com"
+       }
+      },
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "airflow-env.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Description": "Project-specific orchestration permissions for movielens_t2013_daily_v2"
+   },
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/OrchestrationRole/Resource"
+   }
+  },
+  "OrchestrationRoleDefaultPolicy3D6F339A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "glue:StartJobRun",
+        "glue:GetJobRun",
+        "glue:GetJobRuns",
+        "glue:BatchStopJobRun"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":glue:us-east-1:",
+          {
+           "Ref": "AWS::AccountId"
+          },
+          ":job/cineinsight-movielens_t2013_daily_v2-*"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": "s3:ListBucket",
+       "Condition": {
+        "StringLike": {
+         "s3:prefix": [
+          "runs/movielens_t2013_daily_v2/control/*",
+          "runs/movielens_t2013_daily_v2/landing/*"
+         ]
+        }
+       },
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "DataLakeBucket0256EA8E",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/control/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataLakeBucket0256EA8E",
+             "Arn"
+            ]
+           },
+           "/runs/movielens_t2013_daily_v2/landing/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:GetLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":logs:us-east-1:",
+          {
+           "Ref": "AWS::AccountId"
+          },
+          ":log-group:airflow-cineinsight-movielens_t2013_daily_v2-*:*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "OrchestrationRoleDefaultPolicy3D6F339A",
+    "Roles": [
+     {
+      "Ref": "OrchestrationRole459E04B5"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/OrchestrationRole/DefaultPolicy/Resource"
+   }
+  },
+  "MonthlyBudget": {
+   "Type": "AWS::Budgets::Budget",
+   "Properties": {
+    "Budget": {
+     "BudgetLimit": {
+      "Amount": 25,
+      "Unit": "USD"
+     },
+     "BudgetName": "cineinsight-movielens_t2013_daily_v2-monthly",
+     "BudgetType": "COST",
+     "TimeUnit": "MONTHLY"
+    },
+    "NotificationsWithSubscribers": []
+   },
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/MonthlyBudget"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/0WNwQ6CMBBEv4V7WaEcvIuJRwkePJoFCtSWltBtCGn4dwNoPL2Zzb4MB37mkEQ4u7huVKxlBeFBWCuGs3sFl0G4+FoJYnlrvulAYbWsl//56CvrtBeQt+aKhBU6wSQOEEqrxfa786/+JKReGNy0p53UbbJ+ZJVvOkEO9oUtrptx9zR6WlmxUG/NKYM0gZRHbydlPHlDchBQHvwAEj73T90AAAA="
+   },
+   "Metadata": {
+    "aws:cdk:path": "MovieLensFoundation/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "BucketName": {
+   "Value": {
+    "Ref": "DataLakeBucket0256EA8E"
+   }
+  },
+  "RunPrefix": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "s3://",
+      {
+       "Ref": "DataLakeBucket0256EA8E"
+      },
+      "/runs/movielens_t2013_daily_v2/"
+     ]
+    ]
+   }
+  },
+  "GlueDatabaseName": {
+   "Value": "movielens_movielens_t2013_daily_v2"
+  },
+  "AthenaWorkGroupName": {
+   "Value": "cineinsight-movielens-t2013-daily-v2"
+  },
+  "GlueJobRoleArn": {
+   "Value": {
+    "Fn::GetAtt": [
+     "GlueJobRoleF1B69418",
+     "Arn"
+    ]
+   }
+  },
+  "AthenaQueryRoleArn": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AthenaQueryRole029AC370",
+     "Arn"
+    ]
+   }
+  },
+  "OrchestrationRoleArn": {
+   "Value": {
+    "Fn::GetAtt": [
+     "OrchestrationRole459E04B5",
+     "Arn"
+    ]
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

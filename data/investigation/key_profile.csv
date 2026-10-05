@@ -1,0 +1,7 @@
+table,candidate_key,row_count,distinct_key_count,rows_marked_duplicate,row_count_minus_distinct_keys
+rating,"userId, movieId",20000263,20000263,0,0
+tag,"userId, movieId, tag, timestamp",465564,465564,0,0
+movie,movieId,27278,27278,0,0
+link,movieId,27278,27278,0,0
+genome_scores,"movieId, tagId",11709768,11709768,0,0
+genome_tags,tagId,1128,1128,0,0

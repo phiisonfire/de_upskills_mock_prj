@@ -1,0 +1,19 @@
+{
+  "app": "python3 app.py",
+  "context": {
+    "run_id": "movielens_t2013_daily_v2",
+    "region": "ap-southeast-1",
+    "bucket_name": "",
+    "monthly_budget_usd": 25,
+    "budget_alert_email": "",
+    "athena_scan_limit_mb": 1024,
+    "mwaa_enabled": false,
+    "mwaa_airflow_version": "2.11.0",
+    "mwaa_environment_class": "mw1.small",
+    "mwaa_min_workers": 1,
+    "mwaa_max_workers": 2,
+    "mwaa_webserver_access_mode": "PUBLIC_ONLY",
+    "mwaa_subnet_ids": [],
+    "mwaa_security_group_ids": []
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "app": "python3 app.py",
+  "context": {
+    "run_id": "movielens_t2013_daily_v2",
+    "region": "ap-southeast-1",
+    "bucket_name": "",
+    "monthly_budget_usd": 25,
+    "budget_alert_email": "",
+    "athena_scan_limit_mb": 1024
+  }
+}

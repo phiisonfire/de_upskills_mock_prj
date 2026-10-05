@@ -166,6 +166,44 @@ class MovieLensFoundationStack(Stack):
         )
         bronze_job.node.add_dependency(database)
 
+        silver_job = glue.CfnJob(
+            self,
+            "SilverDQMergeJob",
+            name=f"cineinsight-{run_id}-silver",
+            description=f"Validate and incrementally merge one Bronze file into Silver for {run_id}",
+            role=glue_role.role_arn,
+            glue_version="5.0",
+            command=glue.CfnJob.JobCommandProperty(
+                name="glueetl",
+                python_version="3",
+                script_location=f"s3://{self.data_bucket.bucket_name}/{prefix}/jobs/silver_merge.py",
+            ),
+            execution_property=glue.CfnJob.ExecutionPropertyProperty(max_concurrent_runs=1),
+            worker_type="G.1X",
+            number_of_workers=2,
+            timeout=180,
+            max_retries=1,
+            default_arguments={
+                "--run_id": run_id,
+                "--database_name": database_name,
+                "--warehouse_uri": f"s3://{self.data_bucket.bucket_name}/{prefix}/silver/",
+                "--datalake-formats": "iceberg",
+                "--enable-glue-datacatalog": "true",
+                "--enable-metrics": "true",
+                "--enable-continuous-cloudwatch-log": "true",
+                "--job-bookmark-option": "job-bookmark-disable",
+                "--TempDir": f"s3://{self.data_bucket.bucket_name}/{prefix}/control/glue-temp/",
+                "--conf": (
+                    "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions "
+                    "--conf spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog "
+                    f"--conf spark.sql.catalog.glue_catalog.warehouse=s3://{self.data_bucket.bucket_name}/{prefix}/silver/ "
+                    "--conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog "
+                    "--conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO"
+                ),
+            },
+        )
+        silver_job.node.add_dependency(database)
+
         results_location = f"s3://{self.data_bucket.bucket_name}/{prefix}/athena-results/"
         workgroup = athena.CfnWorkGroup(
             self,
@@ -204,7 +242,7 @@ class MovieLensFoundationStack(Stack):
             iam.PolicyStatement(
                 actions=["s3:ListBucket", "s3:ListBucketMultipartUploads"],
                 resources=[self.data_bucket.bucket_arn],
-                conditions={"StringLike": {"s3:prefix": [f"{prefix}/bronze/*", f"{prefix}/silver/*", f"{prefix}/gold/*", f"{prefix}/athena-results/*"]}},
+                conditions={"StringLike": {"s3:prefix": [f"{prefix}/bronze/*", f"{prefix}/silver/*", f"{prefix}/gold/*", f"{prefix}/quarantine/*", f"{prefix}/control/*", f"{prefix}/athena-results/*"]}},
             )
         )
         athena_role.add_to_policy(
@@ -223,6 +261,8 @@ class MovieLensFoundationStack(Stack):
                     self.data_bucket.arn_for_objects(f"{prefix}/bronze/*"),
                     self.data_bucket.arn_for_objects(f"{prefix}/silver/*"),
                     self.data_bucket.arn_for_objects(f"{prefix}/gold/*"),
+                    self.data_bucket.arn_for_objects(f"{prefix}/quarantine/*"),
+                    self.data_bucket.arn_for_objects(f"{prefix}/control/*"),
                     self.data_bucket.arn_for_objects(f"{prefix}/athena-results/*"),
                 ],
             )
@@ -313,6 +353,12 @@ class MovieLensFoundationStack(Stack):
             self,
             "BronzeScriptUri",
             value=f"s3://{self.data_bucket.bucket_name}/{prefix}/jobs/bronze_ingest.py",
+        )
+        CfnOutput(self, "SilverJobName", value=silver_job.name or silver_job.ref)
+        CfnOutput(
+            self,
+            "SilverScriptUri",
+            value=f"s3://{self.data_bucket.bucket_name}/{prefix}/jobs/silver_merge.py",
         )
         CfnOutput(self, "AthenaQueryRoleArn", value=athena_role.role_arn)
         CfnOutput(self, "OrchestrationRoleArn", value=mwaa_role.role_arn)

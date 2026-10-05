@@ -110,6 +110,36 @@ Start with the small `rating/batch_0001` file. Replace `<BUCKET_NAME>` with the 
 
 Use the same command with the matching `source_table`, `batch_id`, and S3 URI for each later file. The job accepts manifest-listed event arrivals, movie CDC files, and bootstrap snapshots; it rejects the full rating and tag provenance snapshots. The rating/tag `duplicate_delivery` files are separate deliveries and are retained as such in Bronze for downstream deduplication. Check the Glue run logs and the `bronze_ingestion_control` Iceberg table for `SUCCEEDED` and `RECONCILED`, and compare `actual_row_count` with the manifest. Retry a failed run with the same arguments; the merge key prevents a repeated file from adding the same source rows twice.
 
+## Run Silver DQ and incremental merges
+
+The stack defines a Glue 5.0 Silver job that reads exactly one `source_table`, `batch_id`, and `landing_uri` from Bronze. It creates Iceberg Silver tables in the Glue Catalog, stores row-level rejects in `quarantine/`, and stores DQ results and per-file status in `control/`. The job retains source timestamps as `timestamp_ntz` plus their raw strings; it does not assign UTC semantics. Re-running a successfully completed file is a no-op. A blocking DQ failure is quarantined and recorded before the job exits unsuccessfully. Row-level blank user tags are quarantined as a warning and do not stop the batch.
+
+Upload the Silver script after deploying the stack:
+
+```bash
+~/.local/bin/aws s3 cp infra/jobs/silver_merge.py \
+  s3://<BUCKET_NAME>/runs/movielens_t2013_daily_v2/jobs/silver_merge.py
+```
+
+Silver event references require the content and taxonomy bootstraps first. Run Bronze and then Silver in this order:
+
+1. `movie` snapshot (`batch_0000_history`)
+2. `genome_tags` snapshot (`batch_0000_history`)
+3. `link` snapshot (`batch_0000_history`)
+4. `genome_scores` snapshot (`batch_0000_history`)
+5. Rating and tag history slices and each arrival file, using each manifest-listed `batch_id` and exact Landing URI
+6. `movie_cdc` batches `batch_0001` through `batch_0004` in order
+
+For each Bronze file, first run the Bronze command above. Then run Silver with the exact same source table, batch ID, and input URI as `landing_uri`. For example, once `movie` has been loaded to Bronze:
+
+```bash
+~/.local/bin/aws glue start-job-run \
+  --job-name cineinsight-movielens_t2013_daily_v2-silver \
+  --arguments '{"--source_table":"movie","--batch_id":"batch_0000_history","--landing_uri":"s3://<BUCKET_NAME>/runs/movielens_t2013_daily_v2/landing/movielens/source_snapshot/movie.csv"}'
+```
+
+Use the `arrival_files` and bootstrap entries in `data/simulated/movielens_t2013_daily_v2/manifest.json` to enumerate inputs. Treat `source_snapshot/rating.csv` and `source_snapshot/tag.csv` as provenance only: process their split history slices and arrival files instead. Preserve `batch_0002` late arrivals as separate inputs; Silver merges use stable source event keys and hashes, so an exact repeated delivery is ignored while a conflicting payload is quarantined. The Silver tables `silver_batch_control`, `silver_dq_result`, and `silver_quarantine` record outcomes and row-level reasons. A failed Glue run with blocking DQ must be resolved before treating its batch as complete.
+
 ## Clean up
 
 To remove IAM roles, the Glue database, Athena workgroup, and budget while retaining the data bucket:

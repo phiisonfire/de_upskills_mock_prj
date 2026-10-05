@@ -13,6 +13,7 @@ from aws_cdk import (
     aws_budgets as budgets,
     aws_glue as glue,
     aws_iam as iam,
+    aws_mwaa as mwaa,
     aws_s3 as s3,
 )
 from constructs import Construct
@@ -312,9 +313,7 @@ class MovieLensFoundationStack(Stack):
             )
         )
 
-        # These are the project-specific permissions for MWAA DAG tasks. Add
-        # MWAA's baseline environment permissions before using this as an
-        # environment execution role.
+        # This is the MWAA environment execution role and the DAG's AWS identity.
         mwaa_role = iam.Role(
             self,
             "OrchestrationRole",
@@ -323,6 +322,9 @@ class MovieLensFoundationStack(Stack):
                 iam.ServicePrincipal("airflow-env.amazonaws.com"),
             ),
             description=f"Project-specific orchestration permissions for {run_id}",
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AmazonMWAAServiceRolePolicy")
+            ],
         )
         mwaa_role.add_to_policy(
             iam.PolicyStatement(
@@ -334,7 +336,13 @@ class MovieLensFoundationStack(Stack):
             iam.PolicyStatement(
                 actions=["s3:ListBucket"],
                 resources=[self.data_bucket.bucket_arn],
-                conditions={"StringLike": {"s3:prefix": [f"{prefix}/control/*", f"{prefix}/landing/*"]}},
+                conditions={"StringLike": {"s3:prefix": [f"{prefix}/control/*", f"{prefix}/landing/*", f"{prefix}/airflow/dags/*"]}},
+            )
+        )
+        mwaa_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetBucketLocation"],
+                resources=[self.data_bucket.bucket_arn],
             )
         )
         mwaa_role.add_to_policy(
@@ -343,7 +351,14 @@ class MovieLensFoundationStack(Stack):
                 resources=[
                     self.data_bucket.arn_for_objects(f"{prefix}/control/*"),
                     self.data_bucket.arn_for_objects(f"{prefix}/landing/*"),
+                    self.data_bucket.arn_for_objects(f"{prefix}/airflow/dags/*"),
                 ],
+            )
+        )
+        mwaa_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetObjectVersion"],
+                resources=[self.data_bucket.arn_for_objects(f"{prefix}/airflow/dags/*")],
             )
         )
         mwaa_role.add_to_policy(
@@ -352,6 +367,45 @@ class MovieLensFoundationStack(Stack):
                 resources=[f"arn:{self.partition}:logs:{self.region}:{self.account}:log-group:airflow-cineinsight-{run_id}-*:*"] ,
             )
         )
+
+        mwaa_env = None
+        mwaa_enabled = self.node.try_get_context("mwaa_enabled") in (True, "true", "True", 1, "1")
+        if mwaa_enabled:
+            subnet_ids = [str(value) for value in (self.node.try_get_context("mwaa_subnet_ids") or [])]
+            security_group_ids = [str(value) for value in (self.node.try_get_context("mwaa_security_group_ids") or [])]
+            if len(subnet_ids) != 2 or not security_group_ids:
+                raise ValueError(
+                    "mwaa_enabled requires exactly two subnet IDs in separate AZs and at least one security group "
+                    "from an MWAA-ready VPC."
+                )
+            mwaa_name = f"cineinsight-{re.sub('[^a-z0-9-]', '-', run_id.lower())[:55]}"
+            mwaa_env = mwaa.CfnEnvironment(
+                self,
+                "ManagedAirflowEnvironment",
+                name=mwaa_name,
+                airflow_version=str(self.node.try_get_context("mwaa_airflow_version") or "2.11.0"),
+                environment_class=str(self.node.try_get_context("mwaa_environment_class") or "mw1.small"),
+                min_workers=int(self.node.try_get_context("mwaa_min_workers") or 1),
+                max_workers=int(self.node.try_get_context("mwaa_max_workers") or 2),
+                schedulers=2,
+                dag_s3_path=f"{prefix}/airflow/dags",
+                source_bucket_arn=self.data_bucket.bucket_arn,
+                execution_role_arn=mwaa_role.role_arn,
+                webserver_access_mode=str(self.node.try_get_context("mwaa_webserver_access_mode") or "PUBLIC_ONLY"),
+                network_configuration=mwaa.CfnEnvironment.NetworkConfigurationProperty(
+                    subnet_ids=subnet_ids,
+                    security_group_ids=security_group_ids,
+                ),
+                logging_configuration=mwaa.CfnEnvironment.LoggingConfigurationProperty(
+                    dag_processing_logs=mwaa.CfnEnvironment.ModuleLoggingConfigurationProperty(enabled=True, log_level="INFO"),
+                    scheduler_logs=mwaa.CfnEnvironment.ModuleLoggingConfigurationProperty(enabled=True, log_level="INFO"),
+                    task_logs=mwaa.CfnEnvironment.ModuleLoggingConfigurationProperty(enabled=True, log_level="INFO"),
+                    webserver_logs=mwaa.CfnEnvironment.ModuleLoggingConfigurationProperty(enabled=True, log_level="INFO"),
+                    worker_logs=mwaa.CfnEnvironment.ModuleLoggingConfigurationProperty(enabled=True, log_level="INFO"),
+                ),
+                airflow_configuration_options={"core.load_examples": "False", "core.default_timezone": "utc"},
+            )
+            mwaa_env.node.add_dependency(mwaa_role)
 
         notifications: list[budgets.CfnBudget.NotificationWithSubscribersProperty] = []
         if alert_email:
@@ -402,3 +456,10 @@ class MovieLensFoundationStack(Stack):
         CfnOutput(self, "GoldScriptUri", value=f"s3://{self.data_bucket.bucket_name}/{prefix}/jobs/gold_build.py")
         CfnOutput(self, "AthenaQueryRoleArn", value=athena_role.role_arn)
         CfnOutput(self, "OrchestrationRoleArn", value=mwaa_role.role_arn)
+        CfnOutput(
+            self,
+            "AirflowDagS3Path",
+            value=f"s3://{self.data_bucket.bucket_name}/{prefix}/airflow/dags/",
+        )
+        if mwaa_env is not None:
+            CfnOutput(self, "MwaaEnvironmentName", value=mwaa_env.ref)

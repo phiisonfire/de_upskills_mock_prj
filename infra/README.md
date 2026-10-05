@@ -9,7 +9,7 @@ This CDK stack defines the deployable AWS foundation for `movielens_t2013_daily_
 - An Athena query role and project-specific permissions for an MWAA DAG role.
 - A monthly AWS Budget. Email alerts are configured when an address is supplied.
 
-The stack does not create or upload the dataset, Glue ETL jobs, an MWAA environment, or a CloudTrail trail. The orchestration role contains permissions for a DAG to start/poll Glue and read/write run control records; add MWAA's baseline environment permissions before associating it with an MWAA environment. The Glue role has CloudWatch permissions through `AWSGlueServiceRole`; configure an account-level CloudTrail trail if the course requires an audit trail for S3 object access. S3 prefixes appear as keys when objects are uploaded; they are not standalone directories.
+The stack defines the Glue ETL jobs and an MWAA execution role. It can create an MWAA environment when explicitly enabled and supplied with an existing MWAA-ready VPC; networking is not created automatically. It does not upload the dataset or create a CloudTrail trail. The Glue role has CloudWatch permissions through `AWSGlueServiceRole`; configure an account-level CloudTrail trail if the course requires an audit trail for S3 object access. S3 prefixes appear as keys when objects are uploaded; they are not standalone directories.
 
 The stack also defines a Glue 5.0 Bronze ingestion job. It processes one file per run, keeps source columns as strings, checks that the file checksum and size match the manifest, and adds source lineage including a 1-based data row number (excluding the CSV header). An Iceberg merge key makes retries idempotent. A file-level control table records status and row-count reconciliation. The job script itself must be uploaded to S3 after the stack is deployed.
 
@@ -56,8 +56,14 @@ Edit `context` in `cdk.json` before deployment:
 - `monthly_budget_usd`: monthly account cost threshold in USD.
 - `budget_alert_email`: email address to receive budget alerts. Leave empty to deploy the budget without email notifications.
 - `athena_scan_limit_mb`: maximum bytes Athena may scan in one query.
+- `mwaa_enabled`: set `true` to create an Amazon MWAA environment. It defaults to `false` so a CDK deploy does not start the continuously billed Airflow service.
+- `mwaa_subnet_ids`: when MWAA is enabled, provide exactly two private subnet IDs from separate Availability Zones in an MWAA-ready VPC.
+- `mwaa_security_group_ids`: security groups for the MWAA environment; use the VPC's MWAA security group with the required self-referencing traffic rules.
+- `mwaa_airflow_version`, `mwaa_environment_class`, `mwaa_min_workers`, `mwaa_max_workers`, `mwaa_webserver_access_mode`: MWAA environment settings. The default Airflow version is 2.11.0; confirm it is offered in the selected region before enabling MWAA.
 
 The budget covers account-level cost rather than only these resources. Budget notifications are advisory and do not stop resources or spending.
+
+MWAA requires two private subnets in different Availability Zones and appropriate routing/endpoints. This stack expects those network resources to exist already, because adding NAT gateways or a new MWAA VPC materially increases cost. The MWAA environment itself is billed while running and can exceed the project's default $25 monthly budget. Review AWS's [MWAA VPC requirements](https://docs.aws.amazon.com/mwaa/latest/userguide/vpc-create.html) and [supported Airflow versions](https://docs.aws.amazon.com/mwaa/latest/userguide/airflow-versions.html) before setting `mwaa_enabled` to `true`.
 
 ## Bootstrap and deploy
 
@@ -170,6 +176,21 @@ For each later Silver input, run Gold with the same `source_table`, `batch_id`, 
 Run Gold after each `movie_cdc` Silver batch in order so the effective-dated dimension and any affected rating/tag/genome fact keys are reconciled. Run it after `link` and `genome_tags` to merge their dimensions, and after each `genome_scores` batch to merge those fact rows. Inspect `gold_batch_control` for each run.
 
 The Athena SQL files [assignment_analytics.sql](queries/assignment_analytics.sql) contain the requested ranking, genre quality/popularity/variance, release/event-time trends, normalized-tag, genome coverage/profile, and hidden-gem queries. The 500-vote ranking floor filters thin samples while retaining films well below the profiled 3,614-vote 95th percentile; the 18-vote median shows why an unfiltered list is vulnerable to one- or few-vote titles. The hidden-gem criteria (4.0 average, 100 ratings, under 25% genome coverage) are explicit starting assumptions to explain and adjust in the report. [verification.sql](queries/verification.sql) checks fact grains, Type 2 intervals, Type 1/3 examples, historical point-in-time versus current-state genre joins, and URL formats. Select the Glue database in Athena before running either file. These queries are ready to run after AWS deployment and Gold loads; AWS execution is still pending credentials and deployment.
+
+## Orchestrate with Amazon MWAA
+
+The required Airflow DAG is [movielens_incremental_pipeline.py](dags/movielens_incremental_pipeline.py). It uses Amazon MWAA for managed Airflow and AWS Glue APIs for job submission. The DAG graph shows explicit stages: source bootstraps, rating/tag history, Gold baseline initialization, incremental rating/tag files, then ordered movie CDC. Each input runs Bronze → Silver → Gold and is checkpointed in `control/airflow/processed_manifest_files.json`. Retries reuse the same file arguments; a blocking Silver DQ failure raises a Glue failure and prevents downstream stages from running. A daily 02:00 UTC schedule polls the manifest for new file/checksum entries. The DAG sets two retries and a 24-hour task SLA. On a backfill run, it maps the requested logical date to its manifest batch window; pass `{"batch_id":"batch_0002"}` when manually triggering a particular batch. Since this simulator uses seven-day windows, all days in one window map to that same batch.
+
+To create the AWS-managed environment, first provide an existing MWAA-ready VPC in `cdk.json`, then set `mwaa_enabled` to `true`. The VPC must have two private subnets in different Availability Zones and the required routing or endpoints. Review the expected ongoing service and network costs against the budget before deploying. If you leave MWAA disabled, the DAG file and execution role are still part of the submission, but there is no running Airflow environment.
+
+After deployment, upload the DAG to the `AirflowDagS3Path` stack output:
+
+```bash
+~/.local/bin/aws s3 cp infra/dags/movielens_incremental_pipeline.py \
+  s3://<BUCKET_NAME>/runs/movielens_t2013_daily_v2/airflow/dags/movielens_incremental_pipeline.py
+```
+
+In the MWAA Airflow UI, add Airflow Variables `MOVIELENS_BUCKET` (the `BucketName` output), `MOVIELENS_RUN_ID` (`movielens_t2013_daily_v2`), and `MOVIELENS_REGION` (`ap-southeast-1`). Trigger the DAG once with `{"process_all": true}` to load the currently published manifest in dependency order. Later scheduled runs process only manifest files whose checksum/path has not completed. For a date backfill, use Airflow's backfill facility; the DAG maps the logical date to `batch_id` using the manifest cutoff and `window_days`. You can also manually trigger one batch with `{"batch_id":"batch_0002"}`. Monitor the task graph and CloudWatch task logs; a failed Silver task is the blocking-DQ stop signal.
 
 ## Clean up
 

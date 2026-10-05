@@ -72,7 +72,7 @@ class MovieLensFoundationStack(Stack):
         )
         glue_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["s3:ListBucket"],
+                actions=["s3:ListBucket", "s3:ListBucketMultipartUploads"],
                 resources=[self.data_bucket.bucket_arn],
                 conditions={"StringLike": {"s3:prefix": [f"{prefix}/*"]}},
             )
@@ -86,12 +86,18 @@ class MovieLensFoundationStack(Stack):
         glue_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["s3:GetObject", "s3:GetObjectVersion"],
-                resources=[self.data_bucket.arn_for_objects(f"{prefix}/landing/*")],
+                resources=[
+                    self.data_bucket.arn_for_objects(f"{prefix}/landing/*"),
+                    self.data_bucket.arn_for_objects(f"{prefix}/jobs/*"),
+                ],
             )
         )
         glue_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+                actions=[
+                    "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+                    "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts",
+                ],
                 resources=[
                     self.data_bucket.arn_for_objects(f"{prefix}/bronze/*"),
                     self.data_bucket.arn_for_objects(f"{prefix}/silver/*"),
@@ -119,6 +125,46 @@ class MovieLensFoundationStack(Stack):
             )
         )
         glue_role.node.add_dependency(database)
+
+        bronze_job = glue.CfnJob(
+            self,
+            "BronzeIngestionJob",
+            name=f"cineinsight-{run_id}-bronze",
+            description=f"Ingest one manifest-listed MovieLens file into Bronze for {run_id}",
+            role=glue_role.role_arn,
+            glue_version="5.0",
+            command=glue.CfnJob.JobCommandProperty(
+                name="glueetl",
+                python_version="3",
+                script_location=f"s3://{self.data_bucket.bucket_name}/{prefix}/jobs/bronze_ingest.py",
+            ),
+            execution_property=glue.CfnJob.ExecutionPropertyProperty(
+                max_concurrent_runs=1
+            ),
+            worker_type="G.1X",
+            number_of_workers=2,
+            timeout=120,
+            max_retries=1,
+            default_arguments={
+                "--run_id": run_id,
+                "--database_name": database_name,
+                "--warehouse_uri": f"s3://{self.data_bucket.bucket_name}/{prefix}/bronze/",
+                "--datalake-formats": "iceberg",
+                "--enable-glue-datacatalog": "true",
+                "--enable-metrics": "true",
+                "--enable-continuous-cloudwatch-log": "true",
+                "--job-bookmark-option": "job-bookmark-disable",
+                "--TempDir": f"s3://{self.data_bucket.bucket_name}/{prefix}/control/glue-temp/",
+                "--conf": (
+                    "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions "
+                    "--conf spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog "
+                    f"--conf spark.sql.catalog.glue_catalog.warehouse=s3://{self.data_bucket.bucket_name}/{prefix}/bronze/ "
+                    "--conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog "
+                    "--conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO"
+                ),
+            },
+        )
+        bronze_job.node.add_dependency(database)
 
         results_location = f"s3://{self.data_bucket.bucket_name}/{prefix}/athena-results/"
         workgroup = athena.CfnWorkGroup(
@@ -156,7 +202,7 @@ class MovieLensFoundationStack(Stack):
         )
         athena_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["s3:ListBucket"],
+                actions=["s3:ListBucket", "s3:ListBucketMultipartUploads"],
                 resources=[self.data_bucket.bucket_arn],
                 conditions={"StringLike": {"s3:prefix": [f"{prefix}/bronze/*", f"{prefix}/silver/*", f"{prefix}/gold/*", f"{prefix}/athena-results/*"]}},
             )
@@ -169,7 +215,10 @@ class MovieLensFoundationStack(Stack):
         )
         athena_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"],
+                actions=[
+                    "s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload",
+                    "s3:ListMultipartUploadParts",
+                ],
                 resources=[
                     self.data_bucket.arn_for_objects(f"{prefix}/bronze/*"),
                     self.data_bucket.arn_for_objects(f"{prefix}/silver/*"),
@@ -259,5 +308,11 @@ class MovieLensFoundationStack(Stack):
         CfnOutput(self, "GlueDatabaseName", value=database_name)
         CfnOutput(self, "AthenaWorkGroupName", value=workgroup.name)
         CfnOutput(self, "GlueJobRoleArn", value=glue_role.role_arn)
+        CfnOutput(self, "BronzeJobName", value=bronze_job.name or bronze_job.ref)
+        CfnOutput(
+            self,
+            "BronzeScriptUri",
+            value=f"s3://{self.data_bucket.bucket_name}/{prefix}/jobs/bronze_ingest.py",
+        )
         CfnOutput(self, "AthenaQueryRoleArn", value=athena_role.role_arn)
         CfnOutput(self, "OrchestrationRoleArn", value=mwaa_role.role_arn)

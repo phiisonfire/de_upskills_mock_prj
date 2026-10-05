@@ -11,6 +11,8 @@ This CDK stack defines the deployable AWS foundation for `movielens_t2013_daily_
 
 The stack does not create or upload the dataset, Glue ETL jobs, an MWAA environment, or a CloudTrail trail. The orchestration role contains permissions for a DAG to start/poll Glue and read/write run control records; add MWAA's baseline environment permissions before associating it with an MWAA environment. The Glue role has CloudWatch permissions through `AWSGlueServiceRole`; configure an account-level CloudTrail trail if the course requires an audit trail for S3 object access. S3 prefixes appear as keys when objects are uploaded; they are not standalone directories.
 
+The stack also defines a Glue 5.0 Bronze ingestion job. It processes one file per run, keeps source columns as strings, checks that the file checksum and size match the manifest, and adds source lineage including a 1-based data row number (excluding the CSV header). An Iceberg merge key makes retries idempotent. A file-level control table records status and row-count reconciliation. The job script itself must be uploaded to S3 after the stack is deployed.
+
 ## Prerequisites
 
 - An AWS account and a configured local AWS identity (AWS CLI profile or IAM Identity Center).
@@ -81,13 +83,32 @@ After deployment, confirm the stack outputs and verify the bucket, Glue database
 From the repository root, after reading the `BucketName` stack output:
 
 ```bash
-aws s3 cp data/simulated/movielens_t2013_daily_v2/manifest.json \
+~/.local/bin/aws s3 cp data/simulated/movielens_t2013_daily_v2/manifest.json \
   s3://<BUCKET_NAME>/runs/movielens_t2013_daily_v2/landing/movielens/manifest.json
-aws s3 sync data/simulated/movielens_t2013_daily_v2/landing/movielens/ \
+~/.local/bin/aws s3 sync data/simulated/movielens_t2013_daily_v2/landing/movielens/ \
   s3://<BUCKET_NAME>/runs/movielens_t2013_daily_v2/landing/movielens/
 ```
 
 This copies the provenance snapshots too. The ingestion code must use the manifest's `arrival_files` and bootstrap snapshots, while treating `source_snapshot/rating.csv` and `source_snapshot/tag.csv` as provenance only. Verify uploaded sizes and SHA-256 checksums against `manifest.json` before processing.
+
+## Run one Bronze file
+
+Upload the Glue script to the location configured on the job:
+
+```bash
+~/.local/bin/aws s3 cp infra/jobs/bronze_ingest.py \
+  s3://<BUCKET_NAME>/runs/movielens_t2013_daily_v2/jobs/bronze_ingest.py
+```
+
+Start with the small `rating/batch_0001` file. Replace `<BUCKET_NAME>` with the `BucketName` stack output:
+
+```bash
+~/.local/bin/aws glue start-job-run \
+  --job-name cineinsight-movielens_t2013_daily_v2-bronze \
+  --arguments '{"--source_table":"rating","--batch_id":"batch_0001","--input_uri":"s3://<BUCKET_NAME>/runs/movielens_t2013_daily_v2/landing/movielens/arrivals/rating/batch_id=batch_0001/00000000.csv"}'
+```
+
+Use the same command with the matching `source_table`, `batch_id`, and S3 URI for each later file. The job accepts manifest-listed event arrivals, movie CDC files, and bootstrap snapshots; it rejects the full rating and tag provenance snapshots. The rating/tag `duplicate_delivery` files are separate deliveries and are retained as such in Bronze for downstream deduplication. Check the Glue run logs and the `bronze_ingestion_control` Iceberg table for `SUCCEEDED` and `RECONCILED`, and compare `actual_row_count` with the manifest. Retry a failed run with the same arguments; the merge key prevents a repeated file from adding the same source rows twice.
 
 ## Clean up
 
